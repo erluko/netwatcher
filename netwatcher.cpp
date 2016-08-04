@@ -1,6 +1,12 @@
 # include <SystemConfiguration/SystemConfiguration.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <sys/wait.h>
 
 // MacOS/X Code taken from http://developer.apple.com/technotes/tn/tn1145.html
+// VIA: https://public.msli.com/lcs/jaf/osx_ip_change_notify.cpp
+
 static OSStatus MoreSCErrorBoolean(Boolean success)
 {
    OSStatus err = noErr;
@@ -87,24 +93,112 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
    return err;
 }
 
-static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*changedKeys*/, void * info)
+struct callbackstate {
+  char* path;
+  pid_t last_pid;
+  int run_again;
+};
+
+
+static void handler(struct callbackstate *state){
+  if(state->last_pid){
+    int status;
+    if(waitpid(state->last_pid, &status, WNOHANG) > 0){
+      if(WIFEXITED(status)){
+        fprintf(stderr,"Child exited with status = %d\n",WEXITSTATUS(status));
+      }
+    }
+    if(kill(state->last_pid, 0) != 0){
+      state->run_again = 0;
+    } else {
+      fprintf(stderr,"Old process still running pid = %d\n",state->last_pid);
+      state->run_again++;
+      return;
+    }
+  }
+  if(0 == access(state->path, X_OK)){
+    fprintf(stderr, "Attempting to execute '%s'\n",state->path);
+    pid_t pid = fork();
+    if(pid == -1){
+      fprintf(stderr, "Failed to fork\n");
+      return;
+    }
+    if(pid == 0){
+      execl(state->path, "foo", "IP_CHANGED", NULL);
+      perror("Failed to execute ip change handler");
+      exit(EXIT_FAILURE);
+    } else {
+      state->last_pid = pid;
+    }
+  } else {
+    fprintf(stderr, "No executable file at '%s'\n",state->path);
+  }
+}
+static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*changedKeys*/, void *state)
 {
-   printf("IP Configuration changed, do something!\n");
+  fprintf(stderr, "IP Configuration changed,\n");
+  handler((struct callbackstate *)state);
 }
 
 volatile bool _threadKeepGoing = true;  // in real life another thread might tell us to quit by setting this false and then calling CFRunLoopStop() on our CFRunLoop()
 
+#define FILENAME "/.netwatch"
+
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
+
 int main(int, char **)
 {
    printf("Listening for IP configuration changes...\n");
+   const char *homedir;
 
-   void * contextPtr = NULL;  // only NULL for this trivial example; in real life you could point this to some data you want the IPConfigChangedCallback() to have access to
+   if ((homedir = getenv("HOME")) == NULL) {
+     homedir = getpwuid(getuid())->pw_dir;
+   }
+   size_t homelen = strnlen(homedir, PATH_MAX);
+   size_t flen = strnlen(FILENAME, PATH_MAX);
+   if(homelen >= PATH_MAX - flen) {
+     fprintf(stderr, "Path too long\n");
+     return EXIT_FAILURE;
+   }
+
+   struct callbackstate state;
+   state.run_again = 0;
+   state.last_pid = 0;
+   state.path = (char *) malloc(homelen + flen + 1);
+   if(NULL == state.path){
+     perror("Unable to allocate space to hold path to script");
+     return EXIT_FAILURE;
+   }
+   memcpy(state.path, homedir, homelen);
+   memcpy(state.path + homelen, FILENAME, flen);
+   state.path[homelen+flen]='\0';
+   fprintf(stderr,"Preparing to use '%s' as script path\n", state.path);
+
    SCDynamicStoreRef storeRef = NULL;
    CFRunLoopSourceRef sourceRef = NULL;
-   if (CreateIPAddressListChangeCallbackSCF(IPConfigChangedCallback, contextPtr, &storeRef, &sourceRef) == noErr)
+   if (CreateIPAddressListChangeCallbackSCF(IPConfigChangedCallback, &state, &storeRef, &sourceRef) == noErr)
    {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
-      while(_threadKeepGoing) CFRunLoopRun();
+      while(_threadKeepGoing){
+        CFRunLoopRun();
+        if(state.last_pid != 0){
+          if(state.run_again > 12){
+            kill(state.last_pid, SIGKILL);
+            fprintf(stderr,"Abandoning stubborn child pid=%d\n", state.last_pid);
+            state.run_again = 0;
+            state.last_pid = 0;
+          } else if(state.run_again > 4){
+            kill(state.last_pid, SIGHUP);
+          } else if(state.run_again > 8){
+            kill(state.last_pid, SIGTERM);
+          }
+        }
+        if(state.run_again > 0){
+          handler(&state);
+        }
+      }
       CFRunLoopRemoveSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
       CFRelease(storeRef);
       CFRelease(sourceRef);
