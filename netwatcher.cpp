@@ -99,6 +99,7 @@ struct callbackstate {
   int run_again;
 };
 
+#define FILENAME ".netwatch"
 
 static void handler(struct callbackstate *state){
   if(state->last_pid){
@@ -124,7 +125,7 @@ static void handler(struct callbackstate *state){
       return;
     }
     if(pid == 0){
-      execl(state->path, "foo", "IP_CHANGED", NULL);
+      execl(state->path, FILENAME , "IP_CHANGED", NULL);
       perror("Failed to execute ip change handler");
       exit(EXIT_FAILURE);
     } else {
@@ -140,23 +141,30 @@ static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*ch
   handler((struct callbackstate *)state);
 }
 
-#define FILENAME "/.netwatch"
-
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif
 
 int main(int, char **)
 {
-   printf("Listening for IP configuration changes...\n");
+   close(STDIN_FILENO);
+
+
    const char *homedir;
 
    if ((homedir = getenv("HOME")) == NULL) {
      homedir = getpwuid(getuid())->pw_dir;
    }
+
+   fprintf(stderr, "Changing to %s\n", homedir);
+   if(-1 == chdir(homedir)){
+     perror("Unable to chdir to home directory");
+     return EXIT_FAILURE;
+   }
+
    size_t homelen = strnlen(homedir, PATH_MAX);
    size_t flen = strnlen(FILENAME, PATH_MAX);
-   if(homelen >= PATH_MAX - flen) {
+   if(homelen >= PATH_MAX - flen - 1) {
      fprintf(stderr, "Path too long\n");
      return EXIT_FAILURE;
    }
@@ -164,14 +172,15 @@ int main(int, char **)
    struct callbackstate state;
    state.run_again = 0;
    state.last_pid = 0;
-   state.path = (char *) malloc(homelen + flen + 1);
+   state.path = (char *) malloc(homelen + flen + 2);
    if(NULL == state.path){
      perror("Unable to allocate space to hold path to script");
      return EXIT_FAILURE;
    }
    memcpy(state.path, homedir, homelen);
-   memcpy(state.path + homelen, FILENAME, flen);
-   state.path[homelen+flen]='\0';
+   state.path[homelen]='/';
+   memcpy(state.path + homelen + 1, FILENAME, flen);
+   state.path[homelen+flen+1]='\0';
    fprintf(stderr,"Preparing to use '%s' as script path\n", state.path);
 
    SCDynamicStoreRef storeRef = NULL;
@@ -179,6 +188,7 @@ int main(int, char **)
    if (CreateIPAddressListChangeCallbackSCF(IPConfigChangedCallback, &state, &storeRef, &sourceRef) == noErr)
    {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
+      fprintf(stderr, "Listening for IP configuration changes...\n");
       while(true){
         CFRunLoopRun();
         if(state.last_pid != 0){
