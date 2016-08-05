@@ -10,7 +10,7 @@
 static OSStatus MoreSCErrorBoolean(Boolean success)
 {
    OSStatus err = noErr;
-   if (!success) 
+   if (!success)
    {
       int scErr = SCError();
       if (scErr == kSCStatusOK) scErr = kSCStatusFailed;
@@ -46,7 +46,7 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
    context.info = contextPtr;
    ref = SCDynamicStoreCreate(NULL, CFSTR("AddIPAddressListChangeCallbackSCF"), callback, &context);
    err = MoreSCError(ref);
-   if (err == noErr) 
+   if (err == noErr)
    {
       // This pattern is "State:/Network/Service/[^/]+/IPv4".
       patterns[0] = SCDynamicStoreKeyCreateNetworkServiceEntity(NULL, kSCDynamicStoreDomainState, kSCCompAnyRegex, kSCEntNetIPv4);
@@ -63,13 +63,13 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
    // then tell SCF that we want to watch changes in keys
    // that match that pattern list, then create our run loop
    // source.
-   if (err == noErr) 
+   if (err == noErr)
    {
        patternList = CFArrayCreate(NULL, (const void **) patterns, 2, &kCFTypeArrayCallBacks);
        err = CFQError(patternList);
    }
    if (err == noErr) err = MoreSCErrorBoolean(SCDynamicStoreSetNotificationKeys(ref, NULL, patternList));
-   if (err == noErr) 
+   if (err == noErr)
    {
        rls = SCDynamicStoreCreateRunLoopSource(NULL, ref, 0);
        err = MoreSCError(rls);
@@ -79,7 +79,7 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
    CFQRelease(patterns[0]);
    CFQRelease(patterns[1]);
    CFQRelease(patternList);
-   if (err != noErr) 
+   if (err != noErr)
    {
       CFQRelease(ref);
       ref = NULL;
