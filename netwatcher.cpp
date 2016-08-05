@@ -109,14 +109,15 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
 }
 
 struct callbackstate {
-  char *path;
-  char *fname;
-  pid_t last_pid;
-  int run_again;
+  char *path;     //Full path to UTILITY to execute
+  char *fname;    //Points to the last element of path, for use as ARGV[0] in exec
+  pid_t last_pid; //Process ID of last invocation of UTILITY
+  int run_again;  //True if an IP change arrived while UTILITY was still running
 };
 
 bool g_keep_running = true;
 bool g_verbose = true;
+
 #define LOG(...) do { if(g_verbose) fprintf(stderr, __VA_ARGS__); } while (0)
 
 static void handler(struct callbackstate *state){
@@ -143,6 +144,9 @@ static void handler(struct callbackstate *state){
       return;
     }
     if(pid == 0){
+      //ARGV[1] is "IP_CHANGED" for now.
+      //When support for other events are added, there will
+      //be more than one possible ARGV[1] value, e.g. DNS_CHANGED.
       execl(state->path, state->fname , "IP_CHANGED", NULL);
       perror("Failed to execute ip change handler");
       exit(EXIT_FAILURE);
@@ -150,6 +154,8 @@ static void handler(struct callbackstate *state){
       state->last_pid = pid;
     }
   } else {
+    // This is intentionally not fatal.
+    // The UTILITY can appear, disappear, be edited, etc. and that's fine.
     LOG("No executable file at '%s'\n",state->path);
   }
 }
@@ -160,6 +166,10 @@ static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*ch
 }
 
 void sighandler(int sig){
+  //TODO: add a handler for SIGHUP that:
+  // 1. kills the running utility (if any)
+  // 2. resets last_pid, run_again
+  // 3. invokes the utility
   switch(sig){
   case SIGTERM:
   case SIGINT:
@@ -191,7 +201,6 @@ void usage()
 
 int main(int argc, char **argv)
 {
-
   close(STDIN_FILENO);
   int ch;
   bool daemonize = true;
@@ -260,6 +269,7 @@ int main(int argc, char **argv)
      }
    } else {
      if(fname[0] == '/'){
+       // absolute
        base = "";
      } else {
        // relative
@@ -284,6 +294,7 @@ int main(int argc, char **argv)
    memcpy(at, base, baselen);
    at += baselen;
    if(!fslash) {
+     //Put a slash between BASE and FNAME unless FNAME starts with one
      *(at++)='/';
    }
    memcpy(at, fname, flen);
@@ -297,6 +308,7 @@ int main(int argc, char **argv)
      state.fname++;
    }
 
+   // Disallow paths ending in / OR /. OR /..
    if(state.fname[0] == '\0' ||
       (state.fname[0] == '.' &&
        (state.fname[1] == '\0' ||
@@ -321,15 +333,17 @@ int main(int argc, char **argv)
         CFRunLoopRun();
         if(g_keep_running){
           if(state.last_pid != 0){
+            //The constants 12, 8, and 4 are arbitrary and subject to change
+            //A better design might check the clock instead of counting
             if(state.run_again > 12){
               kill(state.last_pid, SIGKILL);
               LOG("Abandoning stubborn child pid=%d\n", state.last_pid);
               state.run_again = 0;
               state.last_pid = 0;
-            } else if(state.run_again > 4){
-              kill(state.last_pid, SIGHUP);
             } else if(state.run_again > 8){
               kill(state.last_pid, SIGINT);
+            } else if(state.run_again > 4){
+              kill(state.last_pid, SIGHUP);
             }
           }
           if(state.run_again > 0){
