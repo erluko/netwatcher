@@ -149,7 +149,7 @@ static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*ch
 void sighandler(int sig){
   switch(sig){
   case SIGTERM:
-  case SIGQUIT:
+  case SIGINT:
     LOG("Received signal to exit\n");
     keep_running = false;
     CFRunLoopStop(CFRunLoopGetCurrent());
@@ -165,7 +165,7 @@ void done(){
 #define PATH_MAX 1024
 #endif
 
-int main(int, char **)
+int main(int argc, char **argv)
 {
    close(STDIN_FILENO);
    int did_daemon;
@@ -184,6 +184,7 @@ int main(int, char **)
    atexit(done);
    signal(SIGCHLD, SIG_IGN);
    signal(SIGTERM, sighandler);
+   signal(SIGINT, sighandler);
 
    const char *homedir;
 
