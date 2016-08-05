@@ -140,8 +140,6 @@ static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*ch
   handler((struct callbackstate *)state);
 }
 
-volatile bool _threadKeepGoing = true;  // in real life another thread might tell us to quit by setting this false and then calling CFRunLoopStop() on our CFRunLoop()
-
 #define FILENAME "/.netwatch"
 
 #ifndef PATH_MAX
@@ -181,7 +179,7 @@ int main(int, char **)
    if (CreateIPAddressListChangeCallbackSCF(IPConfigChangedCallback, &state, &storeRef, &sourceRef) == noErr)
    {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
-      while(_threadKeepGoing){
+      while(true){
         CFRunLoopRun();
         if(state.last_pid != 0){
           if(state.run_again > 12){
