@@ -265,7 +265,7 @@ int main(int argc, char **argv)
    bool fslash = fname[0]=='/';
    state.path = (char *) malloc(baselen + flen + (fslash?1:2));
    if(NULL == state.path){
-     perror("Unable to allocate space to hold path to script");
+     perror("Unable to allocate space to hold path to utility");
      return EXIT_FAILURE;
    }
    char *at = state.path;
@@ -279,7 +279,7 @@ int main(int argc, char **argv)
    *at='\0';
    state.fname = strrchr(state.path, '/');
    if(state.fname == NULL){
-     fprintf(stderr, "Unable to construct path to script\n");
+     fprintf(stderr, "Unable to construct path to utility\n");
      return EXIT_FAILURE;
    } else {
      state.fname++;
@@ -289,11 +289,14 @@ int main(int argc, char **argv)
       (state.fname[0] == '.' &&
        (state.fname[1] == '\0' ||
         (state.fname[1] == '.' && state.fname[2] == '\0')))){
-     fprintf(stderr, "Invalid script path %s\n", state.path);
+     fprintf(stderr, "Invalid utility path %s\n", state.path);
      return EXIT_FAILURE;
    }
 
-   LOG("Preparing to use '%s' as script path\n", state.path);
+   LOG("Preparing to use '%s' as utility path\n", state.path);
+   if(0 != access(state.path, X_OK)){
+     fprintf(stderr, "WARNING: No executable program at %s\n", state.path);
+   }
 
    SCDynamicStoreRef storeRef = NULL;
    CFRunLoopSourceRef sourceRef = NULL;
