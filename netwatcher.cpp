@@ -2,6 +2,8 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <signal.h>
+#include <unistd.h>
+
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -95,16 +97,15 @@ static OSStatus CreateIPAddressListChangeCallbackSCF(SCDynamicStoreCallBack call
 }
 
 struct callbackstate {
-  char* path;
+  char *path;
+  char *fname;
   pid_t last_pid;
   int run_again;
 };
 
-bool keep_running = true;
+bool g_keep_running = true;
 bool g_verbose = true;
 #define LOG(...) do { if(g_verbose) fprintf(stderr, __VA_ARGS__); } while (0)
-
-#define FILENAME ".netwatch"
 
 static void handler(struct callbackstate *state){
   if(state->last_pid){
@@ -130,7 +131,7 @@ static void handler(struct callbackstate *state){
       return;
     }
     if(pid == 0){
-      execl(state->path, FILENAME , "IP_CHANGED", NULL);
+      execl(state->path, state->fname , "IP_CHANGED", NULL);
       perror("Failed to execute ip change handler");
       exit(EXIT_FAILURE);
     } else {
@@ -151,34 +152,77 @@ void sighandler(int sig){
   case SIGTERM:
   case SIGINT:
     LOG("Received signal to exit\n");
-    keep_running = false;
+    g_keep_running = false;
     CFRunLoopStop(CFRunLoopGetCurrent());
   }
 }
 
+bool g_started = false;
+
 void done(){
-  LOG("Done listening for IP configuration changes\n");
+  if(g_started)
+    LOG("Done listening for IP configuration changes\n");
 }
 
 
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif
+void usage()
+{
+  printf("Usage: netwatcher [-qd] [-f UTILITY ]\n" \
+         " -q: quiet mode\n" \
+         " -d: debug mode, stay in foreground\n" \
+         "Executes UTILITY or ~/.netwatch whenever the IP " \
+         "addresses of this computer change.\n");
+}
 
 int main(int argc, char **argv)
 {
-   close(STDIN_FILENO);
-   int did_daemon;
+
+  close(STDIN_FILENO);
+  int ch;
+  bool daemonize = true;
+  const char *default_fname = ".netwatch";
+  const char *fname = default_fname;
+
+  while ((ch = getopt(argc, argv, "qdh?f:")) != -1) {
+    switch (ch) {
+    case 'q':
+      g_verbose = false;
+      break;
+    case 'd':
+      daemonize = false;
+      g_verbose = true;
+      break;
+    case 'f':
+      fname = optarg;
+      break;
+    case 'h':
+    case '?':
+    default:
+      usage();
+      return EXIT_FAILURE;
+    }
+  }
+  argc -= optind;
+  argv += optind;
+
+  if(daemonize){
+     int did_daemon;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-   did_daemon = 0 == daemon(1,1); //TODO: Switch to using launchd
+     did_daemon = 0 == daemon(1,1); //TODO: Switch to using launchd
 #pragma clang diagnostic pop
 
-   if(!did_daemon){
-     perror("Unable to daemonize");
-     return EXIT_FAILURE;
+     if(!did_daemon){
+       perror("Unable to daemonize");
+       return EXIT_FAILURE;
+     }
+     LOG("Daemonized. PID = %d\n", getpid());
+   } else {
+     LOG("Foreground mode\n");
    }
-   LOG("Daemonized. PID = %d\n",getpid());
 
 
    atexit(done);
@@ -186,37 +230,69 @@ int main(int argc, char **argv)
    signal(SIGTERM, sighandler);
    signal(SIGINT, sighandler);
 
-   const char *homedir;
-
-   if ((homedir = getenv("HOME")) == NULL) {
-     homedir = getpwuid(getuid())->pw_dir;
-   }
-
-   LOG("Changing to %s\n", homedir);
-   if(-1 == chdir(homedir)){
-     perror("Unable to chdir to home directory");
-     return EXIT_FAILURE;
-   }
-
-   size_t homelen = strnlen(homedir, PATH_MAX);
-   size_t flen = strnlen(FILENAME, PATH_MAX);
-   if(homelen >= PATH_MAX - flen - 1) {
-     LOG("Path too long\n");
-     return EXIT_FAILURE;
-   }
-
    struct callbackstate state;
    state.run_again = 0;
    state.last_pid = 0;
-   state.path = (char *) malloc(homelen + flen + 2);
+
+
+   const char *base;
+   if(fname == default_fname) {
+     if ((base = getenv("HOME")) == NULL) {
+       base = getpwuid(getuid())->pw_dir;
+     }
+
+     LOG("Changing to %s\n", base);
+     if(-1 == chdir(base)){
+       perror("Unable to chdir to home directory");
+       return EXIT_FAILURE;
+     }
+   } else {
+     if(fname[0] == '/'){
+       base = "";
+     } else {
+       // relative
+       base = getcwd(NULL, PATH_MAX);
+     }
+   }
+
+   size_t baselen = strnlen(base, PATH_MAX);
+   size_t flen = strnlen(fname, PATH_MAX);
+   if(baselen >= PATH_MAX - flen - 1) {
+     fprintf(stderr,"Path too long\n");
+     return EXIT_FAILURE;
+   }
+
+   bool fslash = fname[0]=='/';
+   state.path = (char *) malloc(baselen + flen + (fslash?1:2));
    if(NULL == state.path){
      perror("Unable to allocate space to hold path to script");
      return EXIT_FAILURE;
    }
-   memcpy(state.path, homedir, homelen);
-   state.path[homelen]='/';
-   memcpy(state.path + homelen + 1, FILENAME, flen);
-   state.path[homelen+flen+1]='\0';
+   char *at = state.path;
+   memcpy(at, base, baselen);
+   at += baselen;
+   if(!fslash) {
+     *(at++)='/';
+   }
+   memcpy(at, fname, flen);
+   at+=flen;
+   *at='\0';
+   state.fname = strrchr(state.path, '/');
+   if(state.fname == NULL){
+     fprintf(stderr, "Unable to construct path to script\n");
+     return EXIT_FAILURE;
+   } else {
+     state.fname++;
+   }
+
+   if(state.fname[0] == '\0' ||
+      (state.fname[0] == '.' &&
+       (state.fname[1] == '\0' ||
+        (state.fname[1] == '.' && state.fname[2] == '\0')))){
+     fprintf(stderr, "Invalid script path %s\n", state.path);
+     return EXIT_FAILURE;
+   }
+
    LOG("Preparing to use '%s' as script path\n", state.path);
 
    SCDynamicStoreRef storeRef = NULL;
@@ -225,9 +301,10 @@ int main(int argc, char **argv)
    {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
       LOG("Listening for IP configuration changes...\n");
-      while(keep_running){
+      g_started = true;
+      while(g_keep_running){
         CFRunLoopRun();
-        if(keep_running){
+        if(g_keep_running){
           if(state.last_pid != 0){
             if(state.run_again > 12){
               kill(state.last_pid, SIGKILL);
