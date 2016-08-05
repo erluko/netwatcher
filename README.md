@@ -49,7 +49,7 @@ http://developer.apple.com/technotes/tn/tn1145.html
 Neither of those locations specifies a license.
 
 Code from those locations must be assumed (c) Jeremy Friesner and
-Apple Computer.
+Apple Computer, respectively.
 
 The changes made Eric Kobrin are hereby released as CC0 1.0 (Public Domain)
 https://creativecommons.org/publicdomain/zero/1.0/
