@@ -1,4 +1,19 @@
-# include <SystemConfiguration/SystemConfiguration.h>
+/*
+This code is derived from Jeremy Friesner's IP change detection code at:
+https://public.msli.com/lcs/jaf/osx_ip_change_notify.cpp
+
+Which in turn claims to derive from:
+http://developer.apple.com/technotes/tn/tn1145.html
+
+Neither of those locations specifies a license.
+
+Code from those locations must be assumed (c) Jeremy Friesner and Apple Computer.
+
+The changes made Eric Kobrin are hereby released as CC0 1.0 (Public Domain)
+https://creativecommons.org/publicdomain/zero/1.0/
+*/
+
+#include <SystemConfiguration/SystemConfiguration.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <signal.h>
@@ -6,9 +21,6 @@
 
 #include <sys/types.h>
 #include <sys/wait.h>
-
-// MacOS/X Code taken from http://developer.apple.com/technotes/tn/tn1145.html
-// VIA: https://public.msli.com/lcs/jaf/osx_ip_change_notify.cpp
 
 static OSStatus MoreSCErrorBoolean(Boolean success)
 {
@@ -317,7 +329,7 @@ int main(int argc, char **argv)
             } else if(state.run_again > 4){
               kill(state.last_pid, SIGHUP);
             } else if(state.run_again > 8){
-            kill(state.last_pid, SIGTERM);
+              kill(state.last_pid, SIGINT);
             }
           }
           if(state.run_again > 0){
