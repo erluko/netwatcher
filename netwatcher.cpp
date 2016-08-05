@@ -1,7 +1,8 @@
 # include <SystemConfiguration/SystemConfiguration.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <pwd.h>
+#include <signal.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 
 // MacOS/X Code taken from http://developer.apple.com/technotes/tn/tn1145.html
@@ -99,6 +100,10 @@ struct callbackstate {
   int run_again;
 };
 
+bool keep_running = true;
+bool g_verbose = true;
+#define LOG(...) do { if(g_verbose) fprintf(stderr, __VA_ARGS__); } while (0)
+
 #define FILENAME ".netwatch"
 
 static void handler(struct callbackstate *state){
@@ -106,22 +111,22 @@ static void handler(struct callbackstate *state){
     int status;
     if(waitpid(state->last_pid, &status, WNOHANG) > 0){
       if(WIFEXITED(status)){
-        fprintf(stderr,"Child exited with status = %d\n",WEXITSTATUS(status));
+        LOG("Child exited with status = %d\n",WEXITSTATUS(status));
       }
     }
     if(kill(state->last_pid, 0) != 0){
       state->run_again = 0;
     } else {
-      fprintf(stderr,"Old process still running pid = %d\n",state->last_pid);
+      LOG("Old process still running pid = %d\n",state->last_pid);
       state->run_again++;
       return;
     }
   }
   if(0 == access(state->path, X_OK)){
-    fprintf(stderr, "Attempting to execute '%s'\n",state->path);
+    LOG("Attempting to execute '%s'\n",state->path);
     pid_t pid = fork();
     if(pid == -1){
-      fprintf(stderr, "Failed to fork\n");
+      LOG("Failed to fork\n");
       return;
     }
     if(pid == 0){
@@ -132,14 +137,29 @@ static void handler(struct callbackstate *state){
       state->last_pid = pid;
     }
   } else {
-    fprintf(stderr, "No executable file at '%s'\n",state->path);
+    LOG("No executable file at '%s'\n",state->path);
   }
 }
 static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*changedKeys*/, void *state)
 {
-  fprintf(stderr, "IP Configuration changed,\n");
+  LOG("IP Configuration changed,\n");
   handler((struct callbackstate *)state);
 }
+
+void sighandler(int sig){
+  switch(sig){
+  case SIGTERM:
+  case SIGQUIT:
+    LOG("Received signal to exit\n");
+    keep_running = false;
+    CFRunLoopStop(CFRunLoopGetCurrent());
+  }
+}
+
+void done(){
+  LOG("Done listening for IP configuration changes\n");
+}
+
 
 #ifndef PATH_MAX
 #define PATH_MAX 1024
@@ -148,7 +168,22 @@ static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*ch
 int main(int, char **)
 {
    close(STDIN_FILENO);
+   int did_daemon;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+   did_daemon = 0 == daemon(1,1); //TODO: Switch to using launchd
+#pragma clang diagnostic pop
 
+   if(!did_daemon){
+     perror("Unable to daemonize");
+     return EXIT_FAILURE;
+   }
+   LOG("Daemonized. PID = %d\n",getpid());
+
+
+   atexit(done);
+   signal(SIGCHLD, SIG_IGN);
+   signal(SIGTERM, sighandler);
 
    const char *homedir;
 
@@ -156,7 +191,7 @@ int main(int, char **)
      homedir = getpwuid(getuid())->pw_dir;
    }
 
-   fprintf(stderr, "Changing to %s\n", homedir);
+   LOG("Changing to %s\n", homedir);
    if(-1 == chdir(homedir)){
      perror("Unable to chdir to home directory");
      return EXIT_FAILURE;
@@ -165,7 +200,7 @@ int main(int, char **)
    size_t homelen = strnlen(homedir, PATH_MAX);
    size_t flen = strnlen(FILENAME, PATH_MAX);
    if(homelen >= PATH_MAX - flen - 1) {
-     fprintf(stderr, "Path too long\n");
+     LOG("Path too long\n");
      return EXIT_FAILURE;
    }
 
@@ -181,30 +216,32 @@ int main(int, char **)
    state.path[homelen]='/';
    memcpy(state.path + homelen + 1, FILENAME, flen);
    state.path[homelen+flen+1]='\0';
-   fprintf(stderr,"Preparing to use '%s' as script path\n", state.path);
+   LOG("Preparing to use '%s' as script path\n", state.path);
 
    SCDynamicStoreRef storeRef = NULL;
    CFRunLoopSourceRef sourceRef = NULL;
    if (CreateIPAddressListChangeCallbackSCF(IPConfigChangedCallback, &state, &storeRef, &sourceRef) == noErr)
    {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
-      fprintf(stderr, "Listening for IP configuration changes...\n");
-      while(true){
+      LOG("Listening for IP configuration changes...\n");
+      while(keep_running){
         CFRunLoopRun();
-        if(state.last_pid != 0){
-          if(state.run_again > 12){
-            kill(state.last_pid, SIGKILL);
-            fprintf(stderr,"Abandoning stubborn child pid=%d\n", state.last_pid);
-            state.run_again = 0;
-            state.last_pid = 0;
-          } else if(state.run_again > 4){
-            kill(state.last_pid, SIGHUP);
-          } else if(state.run_again > 8){
+        if(keep_running){
+          if(state.last_pid != 0){
+            if(state.run_again > 12){
+              kill(state.last_pid, SIGKILL);
+              LOG("Abandoning stubborn child pid=%d\n", state.last_pid);
+              state.run_again = 0;
+              state.last_pid = 0;
+            } else if(state.run_again > 4){
+              kill(state.last_pid, SIGHUP);
+            } else if(state.run_again > 8){
             kill(state.last_pid, SIGTERM);
+            }
           }
-        }
-        if(state.run_again > 0){
-          handler(&state);
+          if(state.run_again > 0){
+            handler(&state);
+          }
         }
       }
       CFRunLoopRemoveSource(CFRunLoopGetCurrent(), sourceRef, kCFRunLoopDefaultMode);
