@@ -40,16 +40,12 @@ NetWatcher is verbose by default.
 
 # Authorship/Licence
 
-This code is derived from Jeremy Friesner's IP change detection code at:
+This code is derived from Jeremy Friesner's public domain IP change
+detection code at:
 https://public.msli.com/lcs/jaf/osx_ip_change_notify.cpp
 
-Which in turn claims to derive from:
+Which in turn derives from:
 http://developer.apple.com/technotes/tn/tn1145.html
-
-Neither of those locations specifies a license.
-
-Code from those locations must be assumed (c) Jeremy Friesner and
-Apple Computer, respectively.
 
 The changes made Eric Kobrin are hereby released as CC0 1.0 (Public Domain)
 https://creativecommons.org/publicdomain/zero/1.0/
