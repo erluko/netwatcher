@@ -112,12 +112,20 @@ struct callbackstate {
   int run_again;  //True if an IP change arrived while UTILITY was still running
 };
 
+
+// globals
 bool g_keep_running = true;
+bool g_force_execute = false;
 bool g_verbose = true;
+bool g_started = false;
+char g_do_dup = 0;
+int g_close = 0;
+
 
 #define LOG(...) do { if(g_verbose) fprintf(stderr, __VA_ARGS__); } while (0)
 
-static void handler(struct callbackstate *state){
+static void handler(struct callbackstate *state)
+{
   if(state->last_pid){
     int status;
     if(waitpid(state->last_pid, &status, WNOHANG) > 0){
@@ -141,6 +149,23 @@ static void handler(struct callbackstate *state){
       return;
     }
     if(pid == 0){
+      // Adjust output as requested
+      if(g_do_dup == 'e'){
+        if(-1 == dup2(STDERR_FILENO, STDOUT_FILENO)){
+          perror("Redirection of stdout to stderr requested, not sucessful");
+        }
+      } else if(g_do_dup == 'o'){
+        if(-1 == dup2(STDOUT_FILENO, STDERR_FILENO)){
+          perror("Redirection of stderr to stdout requested, not sucessful");
+        }
+      }
+      if(g_close & STDERR_FILENO){
+        freopen( "/dev/null", "w", stderr);
+      }
+      if(g_close & STDOUT_FILENO){
+        freopen( "/dev/null", "w", stdout);
+      }
+
       //ARGV[1] is "IP_CHANGED" for now.
       //When support for other events are added, there will
       //be more than one possible ARGV[1] value, e.g. DNS_CHANGED.
@@ -156,29 +181,33 @@ static void handler(struct callbackstate *state){
     LOG("No executable file at '%s'\n",state->path);
   }
 }
+
 static void IPConfigChangedCallback(SCDynamicStoreRef /*store*/, CFArrayRef /*changedKeys*/, void *state)
 {
   LOG("IP Configuration changed,\n");
   handler((struct callbackstate *)state);
 }
 
-void sighandler(int sig){
-  //TODO: add a handler for SIGHUP that:
-  // 1. kills the running utility (if any)
-  // 2. resets last_pid, run_again
-  // 3. invokes the utility
+void sighandler(int sig)
+{
   switch(sig){
   case SIGTERM:
   case SIGINT:
     LOG("Received signal to exit\n");
     g_keep_running = false;
     CFRunLoopStop(CFRunLoopGetCurrent());
+    break;
+  case SIGHUP:
+    LOG("Received signal to force-execute UTILITY\n");
+    g_force_execute = true;
+    CFRunLoopStop(CFRunLoopGetCurrent());
   }
 }
 
-bool g_started = false;
 
-void done(){
+
+void done()
+{
   if(g_started)
     LOG("Done listening for IP configuration changes\n");
 }
@@ -189,22 +218,26 @@ void done(){
 #endif
 void usage()
 {
-  printf("Usage: netwatcher [-qd] [-f UTILITY ]\n" \
+  printf("Usage: netwatcher [-qd] [-EO] [-e|-o] [-f UTILITY ]\n" \
          " -q: quiet mode\n" \
          " -d: debug mode, stay in foreground\n" \
+         " -E: close UTILITY's stderr\n" \
+         " -O: close UTILITY's stdout\n" \
+         " -e: redirect UTILITY's stdout to stderr\n" \
+         " -o: redirect UTILITY's stderr to stdout\n" \
          "Executes UTILITY or ~/.netwatch whenever the IP " \
          "addresses of this computer change.\n");
 }
 
 int main(int argc, char **argv)
 {
-  close(STDIN_FILENO);
+  freopen( "/dev/null", "r", stdin);
   int ch;
   bool daemonize = true;
   const char *default_fname = ".netwatch";
   const char *fname = default_fname;
 
-  while ((ch = getopt(argc, argv, "qdh?f:")) != -1) {
+  while ((ch = getopt(argc, argv, "qEOeoedh?f:")) != -1) {
     switch (ch) {
     case 'q':
       g_verbose = false;
@@ -215,6 +248,16 @@ int main(int argc, char **argv)
       break;
     case 'f':
       fname = optarg;
+      break;
+    case 'e':
+    case 'o':
+      g_do_dup = ch;
+      break;
+    case 'E':
+      g_close |= STDERR_FILENO;
+      break;
+    case 'O':
+      g_close |= STDOUT_FILENO;
       break;
     case 'h':
     case '?':
@@ -247,6 +290,7 @@ int main(int argc, char **argv)
    signal(SIGCHLD, SIG_IGN);
    signal(SIGTERM, sighandler);
    signal(SIGINT, sighandler);
+   signal(SIGHUP, sighandler);
 
    struct callbackstate state;
    state.run_again = 0;
@@ -329,22 +373,46 @@ int main(int argc, char **argv)
       while(g_keep_running){
         CFRunLoopRun();
         if(g_keep_running){
-          if(state.last_pid != 0){
-            //The constants 12, 8, and 4 are arbitrary and subject to change
-            //A better design might check the clock instead of counting
-            if(state.run_again > 12){
-              kill(state.last_pid, SIGKILL);
-              LOG("Abandoning stubborn child pid=%d\n", state.last_pid);
-              state.run_again = 0;
-              state.last_pid = 0;
-            } else if(state.run_again > 8){
-              kill(state.last_pid, SIGINT);
-            } else if(state.run_again > 4){
-              kill(state.last_pid, SIGHUP);
+          if(g_force_execute){
+            g_force_execute = false;
+            // 1. kill the running utility (if any)
+            if(state.last_pid != 0) {
+              if(kill(state.last_pid, 0) == 0) {
+                LOG("Force HUP child %d", state.last_pid);
+                kill(state.last_pid, SIGHUP);
+              }
+              if(kill(state.last_pid, 0) == 0) {
+                LOG("Force INT child %d", state.last_pid);
+                kill(state.last_pid, SIGINT);
+              }
+              if(kill(state.last_pid, 0) == 0) {
+                LOG("Force KILL child %d", state.last_pid);
+                kill(state.last_pid, SIGKILL);
+              }
             }
-          }
-          if(state.run_again > 0){
+            // 2. reset last_pid, run_again
+            state.last_pid = 0;
+            state.run_again = 0;
+            // 3. invoke the utility
             handler(&state);
+          } else {
+            if(state.last_pid != 0){
+              //The constants 12, 8, and 4 are arbitrary and subject to change
+              //A better design might check the clock instead of counting
+              if(state.run_again > 12){
+                kill(state.last_pid, SIGKILL);
+                LOG("Abandoning stubborn child pid=%d\n", state.last_pid);
+                state.run_again = 0;
+                state.last_pid = 0;
+              } else if(state.run_again > 8){
+                kill(state.last_pid, SIGINT);
+              } else if(state.run_again > 4){
+                kill(state.last_pid, SIGHUP);
+              }
+            }
+            if(state.run_again > 0){
+              handler(&state);
+            }
           }
         }
       }

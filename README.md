@@ -15,9 +15,13 @@ Run `make`. There are no dependencies.
 
 # Using NetWatcher
 
-Usage: netwatcher [-qd] [-f UTILITY ]  
+Usage: netwatcher [-qd] [-EO] [-e|-o] [-f UTILITY ]  
  -q: quiet mode  
- -d: debug mode, stay in foreground
+ -d: debug mode, stay in foreground  
+ -E: close UTILITY's stderr  
+ -O: close UTILITY's stdout  
+ -e: redirect UTILITY's stdout to stderr  
+ -o: redirect UTILITY's stderr to stdout
 
 NetWatcher will attempt to not execute UTILITY if it is already
 running, but will instead note that UTILITY should be run again if a
